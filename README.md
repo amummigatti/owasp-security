@@ -25,9 +25,10 @@ use them, and every script also runs standalone from a shell.
 | Skill | Purpose |
 | --- | --- |
 | [owasp-security-skill](skills/owasp-security-skill/SKILL.md) | Scans one or more repositories for OWASP security issues and writes a timestamped Markdown report grouped by repository |
+| [jira-updates-skill](skills/jira-updates-skill/SKILL.md) | Files the findings from that report as Jira issues under an optional epic, without duplicating them on later runs |
 
-Planned in later commits: `jira-updates-skill`, which files the report's findings
-as Jira issues, and `owasp-security-agent`, which runs both skills in sequence.
+Planned in a later commit: `owasp-security-agent`, which runs both skills in
+sequence.
 
 ## Requirements
 
@@ -35,6 +36,10 @@ as Jira issues, and `owasp-security-agent`, which runs both skills in sequence.
 - `git` on `PATH`, to clone the repositories under review
 - Network access to `owasp.org`, so the skill reads the current OWASP rules at
   run time, and to the host serving the repositories being scanned
+- For the Jira skill: network access to your Jira site, and a `.env` file at the
+  repository root holding the Jira settings. Copy
+  [templates/jira.env.template](templates/jira.env.template) to `.env` and fill it
+  in. `.env` is git-ignored because it holds an API token; never commit it.
 
 ## Install
 
@@ -74,6 +79,23 @@ python skills/owasp-security-skill/scripts/render_report.py --findings .owasp-wo
 
 The full workflow, including the review step between scanning and rendering, is in
 [SKILL.md](skills/owasp-security-skill/SKILL.md).
+
+To track the results, ask for the findings to be filed:
+
+```
+File the findings from the latest OWASP report in Jira
+```
+
+That runs [jira-updates-skill](skills/jira-updates-skill/SKILL.md), which creates
+one issue per finding under the configured epic, then verifies that every finding
+in the report reached Jira. Re-running it on the same report updates the existing
+issues instead of duplicating them.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## License
 

@@ -7,3 +7,4 @@ scripts are the *how*.
 | Spec | Describes |
 | --- | --- |
 | [owasp-security-skill.md](owasp-security-skill.md) | Scan repositories against current OWASP guidance |
+| [jira-updates-skill.md](jira-updates-skill.md) | File scan findings as Jira issues, idempotently |
