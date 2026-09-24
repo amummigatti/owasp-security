@@ -103,6 +103,35 @@ class TruncationIsNeverSilent(Workdir):
         rules = [f["rule_id"] for f in scan_directory(repo)["findings"]]
         self.assertIn("npm-manifest-without-lockfile", rules)
 
+    def test_pnpm_lockfile_counts_as_a_lockfile(self):
+        # Found on a real scan: pnpm-lock.yaml was neither treated as generated nor
+        # small enough to read, so nothing could see it and the rule fired blind.
+        repo = self.tmp / "pnpm-app"
+        repo.mkdir()
+        (repo / "package.json").write_text('{"name": "app"}')
+        (repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n" + "# padding\n" * 200_000)
+        result = scan_directory(repo)
+        self.assertNotIn("npm-manifest-without-lockfile", [f["rule_id"] for f in result["findings"]])
+        self.assertTrue(result["scan"]["complete"], result["scan"]["completeness_notes"])
+
+    def test_a_file_skipped_for_size_is_still_visible_to_presence_rules(self):
+        repo = self.tmp / "bigkey"
+        repo.mkdir()
+        (repo / "app.py").write_text("x = 1\n")
+        (repo / "server.pem").write_text("-----BEGIN PRIVATE KEY-----\n" + "A" * 200)
+        rules = [f["rule_id"] for f in scan_directory(repo, max_file_bytes=50)["findings"]]
+        self.assertIn("key-or-certificate-file-committed", rules,
+                      "the file is too large to read, but its name is the whole finding")
+
+    def test_a_binary_file_is_still_visible_to_presence_rules(self):
+        repo = self.tmp / "binkey"
+        repo.mkdir()
+        (repo / "app.py").write_text("x = 1\n")
+        (repo / "keystore.p12").write_bytes(bytes([0]) + b"binary")
+        (repo / "bundle.zip").write_bytes(bytes([0]) + b"binary")
+        rules = [f["rule_id"] for f in scan_directory(repo)["findings"]]
+        self.assertIn("key-or-certificate-file-committed", rules)
+
 
 def finding(fid, title, file, severity="medium", verdict="confirmed", **extra):
     base = {

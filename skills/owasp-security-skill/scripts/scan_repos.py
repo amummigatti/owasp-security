@@ -37,7 +37,8 @@ SKIP_DIRS = {
 }
 
 # Generated or vendored single files that produce matches nobody can act on.
-SKIP_FILE_PATTERNS = ["*.min.js", "*.min.css", "*.map", "*.bundle.js", "*-lock.json", "*.lock"]
+SKIP_FILE_PATTERNS = ["*.min.js", "*.min.css", "*.map", "*.bundle.js", "*-lock.json", "*.lock",
+                      "pnpm-lock.yaml", "npm-shrinkwrap.json"]
 
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp", ".pdf", ".zip", ".gz",
@@ -135,13 +136,15 @@ def mask_secret(text: str) -> str:
 def iter_files(root: Path, max_bytes: int) -> tuple:
     """Return scannable files, counters for what was skipped, and skipped-but-present paths.
 
-    Generated files (lockfiles, minified bundles) are not worth reading for
-    patterns, but their existence still matters: the "manifest without a
-    lockfile" rule can only work if it can see the lockfile. Their paths are
-    returned separately so presence and pair rules can use them.
+    A file can be worth no pattern matching and still matter: the "manifest
+    without a lockfile" rule only needs to know a lockfile is there, and
+    "key file committed" only needs the name. So every path this function
+    declines to read is still returned, whether it was skipped for being
+    generated, binary, oversized or unreadable. Presence and pair rules run over
+    the full list; only content matching is limited to `files`.
     """
     files = []
-    generated_paths = []
+    unscanned_paths = []
     skipped = {"large": 0, "binary": 0, "generated": 0, "unreadable": 0}
     for path in sorted(root.rglob("*")):
         if any(part in SKIP_DIRS for part in path.parts):
@@ -150,20 +153,23 @@ def iter_files(root: Path, max_bytes: int) -> tuple:
             continue
         if any(fnmatch.fnmatch(path.name, pattern) for pattern in SKIP_FILE_PATTERNS):
             skipped["generated"] += 1
-            generated_paths.append(path.relative_to(root).as_posix())
+            unscanned_paths.append(path.relative_to(root).as_posix())
             continue
         if path.suffix.lower() in BINARY_EXTENSIONS:
             skipped["binary"] += 1
+            unscanned_paths.append(path.relative_to(root).as_posix())
             continue
         try:
             if path.stat().st_size > max_bytes:
                 skipped["large"] += 1
+                unscanned_paths.append(path.relative_to(root).as_posix())
                 continue
         except OSError:
             skipped["unreadable"] += 1
+            unscanned_paths.append(path.relative_to(root).as_posix())
             continue
         files.append(path)
-    return files, skipped, generated_paths
+    return files, skipped, unscanned_paths
 
 
 def read_text(path: Path) -> str:
@@ -189,7 +195,7 @@ def snippet_at(content: str, match: re.Match, sensitive: bool) -> str:
 def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
               classify, args) -> dict:
     root = Path(repo["path"])
-    files, skipped, generated_paths = iter_files(root, args.max_file_bytes)
+    files, skipped, unscanned_paths = iter_files(root, args.max_file_bytes)
     findings = []
     counter = 0
     per_rule_totals: dict = {}
@@ -198,7 +204,7 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
     # so every hit past the cap is still counted here and reported.
     suppressed: dict = {}
     capped_occurrences = 0
-    all_relpaths = list(generated_paths)
+    all_relpaths = list(unscanned_paths)
 
     for path in files:
         relpath = path.relative_to(root).as_posix()
