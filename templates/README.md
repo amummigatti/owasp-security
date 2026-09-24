@@ -1,3 +1,4 @@
+<!-- Author: Akshatha Mummigatti -->
 # Templates
 
 Starting points for files that skills and agents produce or consume. Copy one,

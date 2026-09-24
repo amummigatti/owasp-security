@@ -1,4 +1,5 @@
 ---
+# Author: Akshatha Mummigatti
 name: jira-updates-skill
 description: >-
   File the findings from an OWASP security scan report as Jira issues, one issue

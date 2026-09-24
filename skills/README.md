@@ -1,3 +1,4 @@
+<!-- Author: Akshatha Mummigatti -->
 # Skills
 
 Self-describing capabilities an agent can load. Each skill is a directory

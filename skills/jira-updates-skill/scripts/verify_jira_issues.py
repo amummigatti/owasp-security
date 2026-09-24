@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Check that every finding in a report really is in Jira.
 
 This exists because the sync run reports its own success, and that is the weakest

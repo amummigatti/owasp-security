@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Sweep the prepared repositories for candidate OWASP findings.
 
 This is the deterministic half of the skill. It reads every in-scope file once,

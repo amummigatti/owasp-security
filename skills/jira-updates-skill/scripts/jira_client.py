@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Configuration, Jira REST access and document building for the Jira skill.
 
 Imported by sync_jira_issues.py and verify_jira_issues.py; also runnable on its

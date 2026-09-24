@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Checks that the agent definition still points at things that exist.
 
 An agent is prose, so nothing fails when a skill is renamed or a script moves; the
@@ -27,6 +28,8 @@ def read_frontmatter(text: str) -> dict:
     data: dict = {}
     current = None
     for line in match.group(1).splitlines():
+        if line.lstrip().startswith("#"):
+            continue                    # YAML comment, e.g. the author line
         if re.match(r"^\S[^:]*:", line):
             key, _, value = line.partition(":")
             current = key.strip()

@@ -1,3 +1,4 @@
+# Author: Akshatha Mummigatti
 # Local credentials for jira-updates-skill: never commit these.
 # templates/jira.env.template is the committed, value-free version.
 .env

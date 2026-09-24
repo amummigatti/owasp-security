@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """File the findings from an OWASP scan report as Jira issues, idempotently.
 
 Run it twice on the same report and the second run files nothing: it finds the

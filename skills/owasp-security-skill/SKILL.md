@@ -1,4 +1,5 @@
 ---
+# Author: Akshatha Mummigatti
 name: owasp-security-skill
 description: >-
   Scan one or more source repositories for OWASP security issues and produce a

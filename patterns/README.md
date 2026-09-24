@@ -1,3 +1,4 @@
+<!-- Author: Akshatha Mummigatti -->
 # Patterns
 
 Detection rules that skills load at run time. Keeping them here, outside any one

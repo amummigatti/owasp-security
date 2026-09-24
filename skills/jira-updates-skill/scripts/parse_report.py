@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Turn an OWASP scan report into a list of issues ready to file in a tracker.
 
 The report is the contract between the two skills, so this parser reads the

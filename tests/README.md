@@ -1,3 +1,4 @@
+<!-- Author: Akshatha Mummigatti -->
 # Tests
 
 Automated tests and the fixtures they run against, for the scripts under

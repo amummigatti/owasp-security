@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Tests for jira-updates-skill against an in-memory Jira.
 
 The behaviour worth protecting here is idempotency: running the sync twice must

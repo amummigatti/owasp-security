@@ -1,4 +1,5 @@
 ---
+# Author: Akshatha Mummigatti
 name: owasp-security-agent
 description: >-
   Scans one or more repositories for OWASP security issues and, only if the user

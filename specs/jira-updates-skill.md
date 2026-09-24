@@ -1,3 +1,4 @@
+<!-- Author: Akshatha Mummigatti -->
 # Spec: jira-updates-skill
 
 ## Purpose

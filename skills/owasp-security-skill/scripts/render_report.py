@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Render reviewed findings into the timestamped Markdown report.
 
 The report is the deliverable, and it is written to a new timestamped file every

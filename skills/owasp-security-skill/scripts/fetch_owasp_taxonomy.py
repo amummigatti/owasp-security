@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Author: Akshatha Mummigatti
 """Read the current OWASP rule set straight from the OWASP website.
 
 Nothing about the OWASP categories is hardcoded here beyond the entry URL: the
