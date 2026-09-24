@@ -2,7 +2,7 @@
 """Sweep the prepared repositories for candidate OWASP findings.
 
 This is the deterministic half of the skill. It reads every in-scope file once,
-applies the patterns in references/scan_patterns.json, and classifies each hit by
+applies the patterns in patterns/owasp-scan-patterns.json, and classifies each hit by
 looking its CWE up in the taxonomy fetched from owasp.org -- so the OWASP category
 ids in the output come from the live rule set rather than from anything hardcoded
 here.
@@ -46,6 +46,25 @@ BINARY_EXTENSIONS = {
 }
 
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+
+
+RULES_FILENAME = "owasp-scan-patterns.json"
+
+
+def find_default_rules() -> str:
+    """Locate patterns/<catalogue> by walking up from this script, then from the cwd.
+
+    The catalogue lives in the repository's top-level patterns/ folder rather than
+    inside the skill, so it can be reused and reviewed independently of any one
+    skill. Pass --rules to point at a copy kept elsewhere.
+    """
+    starts = [Path(__file__).resolve().parent, Path.cwd().resolve()]
+    for start in starts:
+        for directory in [start] + list(start.parents):
+            candidate = directory / "patterns" / RULES_FILENAME
+            if candidate.is_file():
+                return str(candidate)
+    return ""
 
 
 def load_json(path: str) -> dict:
@@ -310,15 +329,16 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
 
 
 def main() -> int:
-    default_rules = Path(__file__).resolve().parent.parent / "references" / "scan_patterns.json"
+    default_rules = find_default_rules()
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--manifest", required=True, help="manifest.json from prepare_repos.py")
     parser.add_argument("--taxonomy", help="owasp-taxonomy.json from fetch_owasp_taxonomy.py "
                                           "(without it, findings stay UNMAPPED)")
-    parser.add_argument("--rules", default=str(default_rules),
-                        help="pattern catalogue (default: the skill's references/scan_patterns.json)")
+    parser.add_argument("--rules", default=default_rules or None,
+                        help="pattern catalogue (default: patterns/" + RULES_FILENAME
+                             + " found above this script or the current directory)")
     parser.add_argument("--out", required=True, help="where to write the findings JSON")
     parser.add_argument("--max-file-bytes", type=int, default=1_500_000,
                         help="skip files larger than this (default: 1500000)")
@@ -327,6 +347,8 @@ def main() -> int:
     parser.add_argument("--max-per-rule-per-repo", type=int, default=40,
                         help="findings kept per rule per repository (default: 40)")
     args = parser.parse_args()
+    if not args.rules:
+        parser.error("could not find patterns/" + RULES_FILENAME + "; pass --rules PATH")
 
     manifest = load_json(args.manifest)
     catalogue = load_json(args.rules)

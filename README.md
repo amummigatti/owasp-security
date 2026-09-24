@@ -1,43 +1,53 @@
 # OWASP Security Analysis
 
-Reusable [Agent Skills](https://code.claude.com/docs/en/skills) for auditing source repositories
-against the current OWASP guidance, and for reporting the results onward to Jira.
+Reusable skills and agents for auditing source repositories against the current
+OWASP guidance, and for reporting the results onward to Jira.
 
-The skills here are plain Markdown + Python. They are not tied to any single editor or vendor —
-any agent runtime that supports the `SKILL.md` convention (Claude Code, the Claude Agent SDK,
-Claude.ai, or your own harness) can load them, and the Python scripts run standalone from a shell.
+A skill is a directory with a `SKILL.md` (name, description, instructions) and
+Python helper scripts. Any agent runtime that can load skills in that format can
+use them, and every script also runs standalone from a shell.
 
-## Contents
+## Repository layout
 
-| Path | What it is |
+| Path | Contents |
 | --- | --- |
-| [.claude/skills/owasp-security-skill/](.claude/skills/owasp-security-skill/) | Scans one or more repositories for OWASP security issues and writes a timestamped Markdown report |
+| [skills/](skills/) | Skills: one directory each, with `SKILL.md` and `scripts/` |
+| [agents/](agents/) | Agents that orchestrate skills |
+| [patterns/](patterns/) | Detection rules the skills load at run time |
+| [templates/](templates/) | Starting-point shapes for files skills consume |
+| [specs/](specs/) | Requirements for each skill and agent |
+| [docs/](docs/) | Design notes and longer-form documentation |
+| [tests/](tests/) | Automated tests and synthetic fixtures |
 | [reports/](reports/) | Generated reports, one timestamped file per run, kept as evidence |
 
-Planned (added in later commits): a `jira-updates-skill` that files the report's findings as Jira
-issues, and an `owasp-security-agent` that runs both skills in sequence.
+## Available skills
+
+| Skill | Purpose |
+| --- | --- |
+| [owasp-security-skill](skills/owasp-security-skill/SKILL.md) | Scans one or more repositories for OWASP security issues and writes a timestamped Markdown report grouped by repository |
+
+Planned in later commits: `jira-updates-skill`, which files the report's findings
+as Jira issues, and `owasp-security-agent`, which runs both skills in sequence.
 
 ## Requirements
 
-- Python 3.9+ (standard library only — no `pip install` needed)
-- `git` on `PATH` (used to clone the repositories under review)
-- Network access to `owasp.org` so the skill can read the current OWASP rule set at run time,
-  and to whatever host serves the repositories being scanned
+- Python 3.9+ (standard library only, no `pip install`)
+- `git` on `PATH`, to clone the repositories under review
+- Network access to `owasp.org`, so the skill reads the current OWASP rules at
+  run time, and to the host serving the repositories being scanned
 
 ## Install
 
-Clone this repository and copy (or symlink) the skill directories into wherever your agent
-runtime looks for skills:
+Clone the repository and point your agent runtime at the `skills/` directory:
 
 ```bash
 git clone https://github.com/<your-org>/owasp-security-analysis.git
-
-# Project-scoped: available to anyone working in this repo, no copying needed.
-# Claude Code picks up .claude/skills/ automatically.
-
-# User-scoped: available in every project on your machine.
-cp -r owasp-security-analysis/.claude/skills/owasp-security-skill ~/.claude/skills/
 ```
+
+Keep `skills/` and `patterns/` together: the scripts locate the detection rules in
+`patterns/` by searching upward from the script, then from the working directory.
+If you install a skill somewhere else, pass `--rules <path to owasp-scan-patterns.json>`
+to `scan_repos.py`.
 
 ## Usage
 
@@ -47,14 +57,24 @@ Ask your agent for a scan and name the repositories:
 Run an OWASP security scan on https://github.com/OWASP/NodeGoat
 ```
 
-The skill clones each repository, reads the current OWASP taxonomy from the OWASP website,
-scans the code, triages what it finds, and writes
-`reports/owasp-security-report-<UTC timestamp>.md` grouped by repository.
+The skill reads the current OWASP rules, clones each repository, scans and reviews
+the code, and writes `reports/owasp-security-report-<UTC timestamp>.md` grouped by
+repository.
 
-Each script is also usable on its own — see
-[the skill's README-equivalent, SKILL.md](.claude/skills/owasp-security-skill/SKILL.md), and run any
-script with `--help`.
+The scripts can be run on their own; each supports `--help`:
+
+```bash
+python skills/owasp-security-skill/scripts/fetch_owasp_taxonomy.py --out-dir .owasp-workspace
+python skills/owasp-security-skill/scripts/prepare_repos.py --workspace .owasp-workspace --repo <url>
+python skills/owasp-security-skill/scripts/scan_repos.py --manifest .owasp-workspace/manifest.json \
+    --taxonomy .owasp-workspace/owasp-taxonomy.json --out .owasp-workspace/findings.json
+python skills/owasp-security-skill/scripts/render_report.py --findings .owasp-workspace/findings.json \
+    --taxonomy .owasp-workspace/owasp-taxonomy.json --out-dir reports
+```
+
+The full workflow, including the review step between scanning and rendering, is in
+[SKILL.md](skills/owasp-security-skill/SKILL.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

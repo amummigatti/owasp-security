@@ -1,0 +1,20 @@
+{
+  "id": "<repo-name>-<three digit number, unique within the repo>",
+  "rule_id": "manual-<short-kebab-name>",
+  "title": "Short description of the weakness",
+  "severity": "critical | high | medium | low | info",
+  "confidence": "high | medium | low",
+  "owasp_id": "An id from the fetched taxonomy, e.g. the category id shown in owasp-taxonomy.json",
+  "owasp_name": "The matching category name from the same taxonomy entry",
+  "cwe": ["CWE-000"],
+  "file": "path/relative/to/repo/root.ext",
+  "line": 1,
+  "occurrences": 1,
+  "other_lines": [],
+  "snippets": ["One or two lines of evidence. Never a live secret."],
+  "explain": "Why this is a weakness in general.",
+  "analysis": "What you found in this specific code: how untrusted input reaches the sink, or why it cannot.",
+  "remediation": "The concrete change that fixes it.",
+  "detector": "manual-review",
+  "verdict": "confirmed | needs_verification"
+}

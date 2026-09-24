@@ -1,0 +1,13 @@
+{
+  "standards": [
+    {
+      "name": "Name of the OWASP standard or project you consulted",
+      "url": "https://owasp.org/... (the project page you read)",
+      "summary": "One or two sentences on what the standard covers and why it applies to the code under review.",
+      "checks": [
+        "A requirement you will genuinely apply to this codebase",
+        "Another requirement you will genuinely apply"
+      ]
+    }
+  ]
+}

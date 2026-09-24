@@ -89,7 +89,7 @@ Two things the script cannot do for you:
   Then record what you actually consulted so it lands in the evidence:
 
   ```bash
-  # standards.json: {"standards":[{"name":"...","url":"...","summary":"...","checks":["..."]}]}
+  # standards.json follows templates/standards.template.json at the repository root
   python scripts/fetch_owasp_taxonomy.py --out-dir .owasp-workspace --merge standards.json
   ```
 
@@ -130,7 +130,7 @@ python scripts/scan_repos.py --manifest .owasp-workspace/manifest.json \
     --out .owasp-workspace/findings.json
 ```
 
-Applies `references/scan_patterns.json` and classifies each hit by mapping its
+Applies `patterns/owasp-scan-patterns.json` (at the repository root) and classifies each hit by mapping its
 CWE through the taxonomy you just fetched. Every candidate comes out as
 `verdict: "unreviewed"`.
 
@@ -184,9 +184,9 @@ Read, at minimum:
 - **Error handling and logging**, for failures that are swallowed, and for
   security-relevant events that nothing records or alerts on.
 
-Add findings for anything you see, using the same fields plus
-`detector: "manual-review"`, an `owasp_id` taken from the fetched taxonomy, and
-a `file`/`line` a developer can open. Findings you reasoned your way to are
+Add findings for anything you see, following `templates/finding.template.json`
+at the repository root: `detector: "manual-review"`, an `owasp_id` taken from the
+fetched taxonomy, and a `file`/`line` a developer can open. Findings you reasoned your way to are
 usually the most valuable part of the report.
 
 Two rules about evidence. Keep snippets short -- a line or two, enough to
