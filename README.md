@@ -27,8 +27,11 @@ use them, and every script also runs standalone from a shell.
 | [owasp-security-skill](skills/owasp-security-skill/SKILL.md) | Scans one or more repositories for OWASP security issues and writes a timestamped Markdown report grouped by repository |
 | [jira-updates-skill](skills/jira-updates-skill/SKILL.md) | Files the findings from that report as Jira issues under an optional epic, without duplicating them on later runs |
 
-Planned in a later commit: `owasp-security-agent`, which runs both skills in
-sequence.
+## Available agents
+
+| Agent | Purpose |
+| --- | --- |
+| [owasp-security-agent](agents/owasp-security-agent/AGENT.md) | Runs the OWASP scan, then asks whether to log the findings in Jira. On yes it files and verifies the bugs; on no it tells you where the report is |
 
 ## Requirements
 
@@ -80,7 +83,14 @@ python skills/owasp-security-skill/scripts/render_report.py --findings .owasp-wo
 The full workflow, including the review step between scanning and rendering, is in
 [SKILL.md](skills/owasp-security-skill/SKILL.md).
 
-To track the results, ask for the findings to be filed:
+The quickest route is the agent, which runs both skills with a yes-or-no question
+between them:
+
+```
+Run the owasp-security-agent on https://github.com/OWASP/NodeGoat
+```
+
+To run only the Jira step on an existing report, ask for the findings to be filed:
 
 ```
 File the findings from the latest OWASP report in Jira

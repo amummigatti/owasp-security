@@ -8,3 +8,4 @@ scripts are the *how*.
 | --- | --- |
 | [owasp-security-skill.md](owasp-security-skill.md) | Scan repositories against current OWASP guidance |
 | [jira-updates-skill.md](jira-updates-skill.md) | File scan findings as Jira issues, idempotently |
+| [owasp-security-agent.md](owasp-security-agent.md) | Scan, then ask before logging findings in Jira |
