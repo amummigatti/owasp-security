@@ -120,10 +120,38 @@ Candidates the pattern scan raised that reading the code ruled out.
 """
 
 
+def adf_violations(node, found=None):
+    """Rules of Atlassian's document schema that real Jira enforces with a 400.
+
+    Learned the hard way: the first real re-run failed on every issue because a
+    struck-through comment still carried the code mark, and the fake accepted it.
+    """
+    found = [] if found is None else found
+    if isinstance(node, list):
+        for item in node:
+            adf_violations(item, found)
+    elif isinstance(node, dict):
+        marks = [mark.get("type") for mark in node.get("marks", [])]
+        if node.get("type") == "text":
+            if "code" in marks and len(marks) > 1:
+                found.append("code mark combined with " + ", ".join(m for m in marks if m != "code"))
+            if not node.get("text"):
+                found.append("empty text node")
+        elif marks:
+            found.append("marks on a non-text node: " + str(node.get("type")))
+        if node.get("type") == "codeBlock":
+            for child in node.get("content", []):
+                if child.get("marks"):
+                    found.append("marks inside a codeBlock")
+        adf_violations(node.get("content", []), found)
+    return found
+
+
 class FakeJira:
     """Minimal stand-in for the Jira Cloud REST API, recording what it is sent."""
 
-    def __init__(self):
+    def __init__(self, with_priority=True):
+        self.with_priority = with_priority
         self.issues = {}
         self.counter = 1
         self.comment_counter = 0
@@ -140,7 +168,7 @@ class FakeJira:
         if path == API + "/issue/createmeta/AI/issuetypes":
             return 200, {"issueTypes": [{"id": "10004", "name": "Bug"}, {"id": "10001", "name": "Task"}]}
         if path == API + "/issue/createmeta/AI/issuetypes/10004":
-            return 200, {"fields": [
+            fields = [
                 {"fieldId": "summary", "name": "Summary", "required": True},
                 {"fieldId": "description", "name": "Description", "required": False},
                 {"fieldId": "labels", "name": "Labels", "required": False},
@@ -149,7 +177,10 @@ class FakeJira:
                  "allowedValues": [{"id": "1", "name": "Highest"}, {"id": "2", "name": "High"},
                                    {"id": "3", "name": "Medium"}, {"id": "4", "name": "Low"},
                                    {"id": "5", "name": "Lowest"}]},
-            ]}
+            ]
+            if not self.with_priority:
+                fields = [f for f in fields if f["fieldId"] != "priority"]
+            return 200, {"fields": fields}
         if path == API + "/search/jql":
             wanted = set(re.findall(r'"([^"]+)"', (body or {}).get("jql", "")))
             found = []
@@ -166,6 +197,9 @@ class FakeJira:
         if path == API + "/issue" and method == "POST":
             self.counter += 1
             key = "AI-" + str(self.counter)
+            problems = adf_violations(body["fields"].get("description", {}))
+            if problems:
+                raise jc.JiraError(400, ["INVALID_INPUT: " + "; ".join(problems)], path)
             self.created_payloads.append(body["fields"])
             self.issues[key] = {"fields": dict(body["fields"]), "comments": []}
             return 201, {"key": key, "id": str(1000 + self.counter)}
@@ -176,6 +210,9 @@ class FakeJira:
             issue = self.issues[key]
             if method == "GET":
                 return 200, {"comments": issue["comments"]}
+            problems = adf_violations(body["body"]) if method in ("POST", "PUT") else []
+            if problems:
+                raise jc.JiraError(400, ["INVALID_INPUT: " + "; ".join(problems)], path)
             if method == "POST":
                 self.comment_counter += 1
                 comment = {"id": str(self.comment_counter), "body": body["body"],
@@ -207,7 +244,6 @@ CONFIG = {
     "auth_type": "basic",
     "label_prefix": "owasp",
     "extra_labels": [],
-    "priority_override": {},
     "env_file": "",
     "env_file_found": False,
 }
@@ -275,7 +311,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(len(self.fake.issues), 2)
 
         critical = self.fake.created_payloads[0]
-        self.assertEqual(critical["priority"], {"name": "Highest"})
+        self.assertNotIn("priority", critical, "priority is deliberately never set; severity is a label")
         self.assertEqual(critical["parent"], {"key": "AI-1"})
         self.assertEqual(critical["issuetype"], {"id": "10004"})
         self.assertEqual(critical["project"], {"key": "AI"})
@@ -295,7 +331,8 @@ class SyncTests(unittest.TestCase):
             self.assertNotIn(" ", item)
 
         medium = self.fake.created_payloads[1]
-        self.assertEqual(medium["priority"], {"name": "Medium"})
+        self.assertNotIn("priority", medium)
+        self.assertIn("severity-medium", medium["labels"])
         self.assertIn("owasp-needs-verification", medium["labels"])
 
     def test_description_has_current_issue_and_expected_fix(self):
@@ -340,15 +377,26 @@ class SyncTests(unittest.TestCase):
         unstruck = [comment for comment in comments if not sync.is_struck(comment["body"])]
         self.assertEqual(len(unstruck), 1)
 
-    def test_severity_change_updates_priority_and_is_noted(self):
+    def test_severity_change_swaps_the_severity_label_and_is_noted(self):
         run_sync(self.fake, self.parsed)
         raised = REPORT.replace("- **Severity:** MEDIUM", "- **Severity:** HIGH")
         _, outcome = run_sync(self.fake, parse_report.parse(raised, "reports/demo.md"))
         record = [r for r in outcome["results"] if r["finding_id"] == "demo-app-002"][0]
-        self.assertIn("priority Medium -> High", record["changes"])
-        self.assertEqual(self.fake.issues["AI-3"]["fields"]["priority"], {"name": "High"})
+        self.assertIn("severity medium -> high", record["changes"])
+        labels = self.fake.issues["AI-3"]["fields"]["labels"]
+        self.assertIn("severity-high", labels)
+        self.assertNotIn("severity-medium", labels, "the old severity label must be replaced, not kept")
+        self.assertEqual(len([item for item in labels if item.startswith("severity-")]), 1)
+        self.assertNotIn("priority", self.fake.issues["AI-3"]["fields"])
         latest = jc.plain_text(self.fake.issues["AI-3"]["comments"][-1]["body"])
-        self.assertIn("priority Medium -> High", latest)
+        self.assertIn("severity medium -> high", latest)
+
+    def test_unchanged_severity_leaves_labels_alone(self):
+        run_sync(self.fake, self.parsed)
+        before = list(self.fake.issues["AI-2"]["fields"]["labels"])
+        _, outcome = run_sync(self.fake, self.parsed)
+        self.assertEqual(self.fake.issues["AI-2"]["fields"]["labels"], before)
+        self.assertEqual(outcome["results"][0]["changes"], [])
 
     def test_dry_run_writes_nothing(self):
         run_sync(self.fake, self.parsed, dry_run=True)
@@ -364,6 +412,48 @@ class SyncTests(unittest.TestCase):
         kept = [c for c in self.fake.issues["AI-2"]["comments"] if c["id"] == "900"][0]
         self.assertFalse(sync.is_struck(kept["body"]))
         self.assertIn("leave it alone", jc.plain_text(kept["body"]))
+
+
+class PriorityIsIgnoredTests(unittest.TestCase):
+    """The Priority field is never read or written; severity is carried by a label."""
+
+    def setUp(self):
+        self.parsed = parse_report.parse(REPORT, "reports/demo.md")
+
+    def _sync_against(self, fake):
+        client = jc.JiraClient(CONFIG)
+        client._request = fake.handle  # noqa: SLF001
+        checks = sync.preflight(client, CONFIG)
+        outcome = sync.sync(client, CONFIG, self.parsed, checks, "owasp-security-agent")
+        return checks, outcome
+
+    def test_screen_without_a_priority_field_is_not_a_problem(self):
+        fake = FakeJira(with_priority=False)
+        checks, outcome = self._sync_against(fake)
+        self.assertEqual(checks["problems"], [])
+        self.assertTrue(all(record["ok"] for record in outcome["results"]))
+        for payload in fake.created_payloads:
+            self.assertNotIn("priority", payload)
+
+    def test_screen_with_a_priority_field_is_still_not_written_to(self):
+        fake = FakeJira(with_priority=True)
+        checks, outcome = self._sync_against(fake)
+        self.assertEqual(checks["problems"], [])
+        for payload in fake.created_payloads:
+            self.assertNotIn("priority", payload)
+
+    def test_no_priority_label_is_invented(self):
+        fake = FakeJira(with_priority=False)
+        self._sync_against(fake)
+        for payload in fake.created_payloads:
+            self.assertFalse([item for item in payload["labels"] if item.startswith("priority-")])
+            self.assertTrue([item for item in payload["labels"] if item.startswith("severity-")])
+
+    def test_severity_is_stated_in_the_description(self):
+        fake = FakeJira(with_priority=False)
+        self._sync_against(fake)
+        body = jc.plain_text(fake.created_payloads[0]["description"])
+        self.assertIn("Severity: critical", body)
 
 
 class SummaryFormatTests(unittest.TestCase):
@@ -450,14 +540,29 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(result["missing_findings"][0]["finding_id"], "demo-app-002")
         self.assertIn("re-run sync_jira_issues.py", result["next_step"])
 
-    def test_detects_priority_drift(self):
+    def test_detects_a_wrong_severity_label(self):
         run_sync(self.fake, self.parsed)
-        self.fake.issues["AI-2"]["fields"]["priority"] = {"name": "Low"}
+        labels = self.fake.issues["AI-2"]["fields"]["labels"]
+        self.fake.issues["AI-2"]["fields"]["labels"] = [
+            "severity-low" if item == "severity-critical" else item for item in labels]
         result = self._verify()
         self.assertFalse(result["ok"])
         self.assertEqual(result["missing"], 0)
         self.assertEqual(result["inconsistent"], 1)
-        self.assertIn("expected Highest", result["inconsistencies"][0]["problems"][0])
+        self.assertIn("severity label severity-critical is missing", result["inconsistencies"][0]["problems"][0])
+
+    def test_detects_conflicting_severity_labels(self):
+        run_sync(self.fake, self.parsed)
+        self.fake.issues["AI-2"]["fields"]["labels"].append("severity-low")
+        result = self._verify()
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("conflicting severity labels" in problem
+                            for problem in result["inconsistencies"][0]["problems"]))
+
+    def test_priority_is_not_checked(self):
+        run_sync(self.fake, self.parsed)
+        self.fake.issues["AI-2"]["fields"]["priority"] = {"name": "Lowest"}
+        self.assertTrue(self._verify()["ok"])
 
     def test_detects_issue_moved_out_of_the_epic(self):
         run_sync(self.fake, self.parsed)
@@ -511,11 +616,24 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("strike", json.dumps(struck["content"][0]))
         self.assertNotIn("strike", json.dumps(struck["content"][1]))
 
-    def test_priority_falls_back_when_scheme_differs(self):
-        self.assertEqual(jc.resolve_priority("critical", ["Blocker", "Major", "Minor"], {}), "Blocker")
-        self.assertEqual(jc.resolve_priority("high", ["Blocker", "Major", "Minor"], {}), "Major")
-        self.assertEqual(jc.resolve_priority("medium", ["Blocker", "Major", "Minor"], {}), "")
-        self.assertEqual(jc.resolve_priority("critical", ["P1", "P2"], {"critical": "P2"}), "P2")
+    def test_struck_comment_is_valid_for_jira(self):
+        # The comment the skill posts ends with a code-styled run marker.
+        issue = {"finding_id": "x-1", "title": "t", "file": "a.py", "line": 1, "severity": "low",
+                 "fingerprint": "abc", "status": "Confirmed by review", "repo_commit": "c"}
+        comment = sync.build_comment(issue, {"file_name": "r.md", "generated_utc": "u"}, "agent", True, [])
+        self.assertEqual(adf_violations(comment), [])
+        struck = jc.strike_document(comment)
+        self.assertEqual(adf_violations(struck), [], "striking must not produce a schema violation")
+        self.assertTrue(sync.is_struck(struck))
+        self.assertIn(sync.MARKER, jc.plain_text(struck), "a struck comment must still be recognisable as ours")
+
+    def test_fake_rejects_what_real_jira_rejects(self):
+        bad = jc.document(jc.paragraph(jc.text("marker", marks=["code", "strike"])))
+        self.assertTrue(adf_violations(bad))
+
+    def test_no_priority_machinery_remains(self):
+        self.assertFalse(hasattr(jc, "resolve_priority"))
+        self.assertFalse(hasattr(jc, "PRIORITY_CANDIDATES"))
 
 
 if __name__ == "__main__":

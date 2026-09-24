@@ -41,15 +41,7 @@ USER_AGENT = "jira-updates-skill"
 
 REQUIRED_KEYS = ["JIRA_BASE_URL", "JIRA_API_TOKEN", "JIRA_PROJECT_ID", "JIRA_ISSUE_TYPE"]
 
-# Jira instances name their priority scheme differently, so each severity has an
-# ordered list of candidates and the first one the project actually offers wins.
-PRIORITY_CANDIDATES = {
-    "critical": ["Highest", "Critical", "Blocker", "P1", "High"],
-    "high": ["High", "Major", "P2", "Highest"],
-    "medium": ["Medium", "Normal", "Moderate", "P3"],
-    "low": ["Low", "Minor", "P4"],
-    "info": ["Lowest", "Trivial", "Info", "P5", "Low"],
-}
+SEVERITIES = ["critical", "high", "medium", "low", "info"]
 
 _SECRETS = set()
 
@@ -162,14 +154,6 @@ def load_config(env_path: str = "") -> dict:
         "env_file": str(env_file) if env_file.is_file() else "",
         "env_file_found": env_file.is_file(),
     }
-
-    override = value("JIRA_PRIORITY_MAP")
-    config["priority_override"] = {}
-    if override:
-        for pair in override.split(","):
-            if ":" in pair:
-                severity, name = pair.split(":", 1)
-                config["priority_override"][severity.strip().lower()] = name.strip()
     return config
 
 
@@ -245,7 +229,10 @@ def strike_document(node):
     if copied.get("type") == "codeBlock":
         return copied
     if copied.get("type") == "text":
-        marks = [mark for mark in copied.get("marks", []) if mark.get("type") != "strike"]
+        # Atlassian's document schema does not allow the code mark to be combined
+        # with strike (Jira answers 400 INVALID_INPUT), so struck text drops its
+        # code styling: a struck-through marker line reads fine as plain text.
+        marks = [mark for mark in copied.get("marks", []) if mark.get("type") not in ("strike", "code")]
         marks.append({"type": "strike"})
         copied["marks"] = marks
         return copied
@@ -404,7 +391,7 @@ class JiraClient:
             fields.append(item)
         return {"issue_type": match, "fields": fields, "available_types": names}
 
-    def search(self, jql: str, fields=("summary", "status", "labels", "priority", "parent"),
+    def search(self, jql: str, fields=("summary", "status", "labels", "parent"),
                max_results: int = 100) -> list:
         """Run JQL, preferring the current endpoint and falling back to the old one."""
         body = {"jql": jql, "maxResults": max_results, "fields": list(fields)}
@@ -445,19 +432,6 @@ class JiraClient:
         self._request("PUT", API + "/issue/" + key + "/comment/" + str(comment_id), body={"body": adf})
 
 
-def resolve_priority(severity: str, allowed_names: list, override: dict) -> str:
-    """Choose a priority this project actually offers for a given severity."""
-    severity = (severity or "medium").lower()
-    available = {name.lower(): name for name in allowed_names if name}
-    wanted = override.get(severity)
-    if wanted and wanted.lower() in available:
-        return available[wanted.lower()]
-    for candidate in PRIORITY_CANDIDATES.get(severity, []):
-        if candidate.lower() in available:
-            return available[candidate.lower()]
-    return ""
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check Jira configuration and connectivity.")
     parser.add_argument("--check", action="store_true", help="verify credentials and project access")
@@ -495,8 +469,6 @@ def main() -> int:
         return 1
 
     required = [field.get("name") for field in meta["fields"] if field.get("required")]
-    priority_field = next((field for field in meta["fields"] if field.get("fieldId") == "priority"), None)
-    priorities = [value.get("name") for value in (priority_field or {}).get("allowedValues", [])]
     print(json.dumps({
         "ok": True,
         "authenticated_as": me.get("displayName") or me.get("emailAddress", "unknown"),
@@ -504,7 +476,6 @@ def main() -> int:
         "issue_type": (meta["issue_type"] or {}).get("name") or "NOT FOUND",
         "available_issue_types": meta["available_types"],
         "required_fields": required,
-        "priorities_available": priorities,
         "epic": config["epic"] or None,
     }, indent=2))
     return 0

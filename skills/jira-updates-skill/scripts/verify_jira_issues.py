@@ -8,7 +8,7 @@ disagreeing with the report while the sync output still reads mostly fine. So
 this reads the report again, asks Jira what it actually holds, and compares.
 
 It checks, per finding: an issue carries the fingerprint label, it sits under the
-configured epic, its priority matches the severity, and it has a status comment
+configured epic, its severity label matches the report, and it has a status comment
 from the agent. Findings with no issue are reported as missing, which is the
 signal to re-run the sync.
 
@@ -91,7 +91,6 @@ def verify(client, config: dict, issues: list, report: dict, check_comments: boo
     """Compare the report's findings against what Jira actually holds."""
     meta = client.create_meta()
     fields = {field.get("fieldId"): field for field in meta["fields"]}
-    priorities = [value.get("name") for value in fields.get("priority", {}).get("allowedValues", [])]
     existing = sync.find_existing(client, config, issues) if issues else {}
 
     checks = []
@@ -119,13 +118,16 @@ def verify(client, config: dict, issues: list, report: dict, check_comments: boo
         record["key"] = match["key"]
         record["status"] = (issue_fields.get("status") or {}).get("name")
 
-        expected_priority = jc.resolve_priority(issue["severity"], priorities,
-                                                config.get("priority_override", {}))
-        actual_priority = (issue_fields.get("priority") or {}).get("name")
-        record["priority"] = actual_priority
-        if expected_priority and actual_priority and expected_priority != actual_priority:
-            problems.append("priority is " + actual_priority + ", expected "
-                            + expected_priority + " for severity " + issue["severity"])
+        # Severity is carried by a label (no Priority field is managed), so that
+        # label is what has to agree with the report.
+        labels_on_issue = issue_fields.get("labels", []) or []
+        wanted_severity = sync.severity_label(issue)
+        record["severity_labels"] = sorted(item for item in labels_on_issue if item in sync.SEVERITY_LABELS)
+        if wanted_severity not in labels_on_issue:
+            problems.append("severity label " + wanted_severity + " is missing; issue has "
+                            + (", ".join(record["severity_labels"]) or "no severity label"))
+        elif len(record["severity_labels"]) > 1:
+            problems.append("conflicting severity labels: " + ", ".join(record["severity_labels"]))
 
         if config.get("epic"):
             parent = (issue_fields.get("parent") or {}).get("key")

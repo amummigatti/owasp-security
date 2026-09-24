@@ -70,7 +70,7 @@ python scripts/jira_client.py --check
 ```
 
 This authenticates, then reports the project, the issue type, **which fields the
-project marks required**, and which priorities its scheme offers. Read the
+project marks required**. Read the
 output before filing anything: a project that requires a field this skill does
 not know about will reject every create, and it is much better to learn that from
 one check than from thirty failed calls.
@@ -85,7 +85,7 @@ python scripts/sync_jira_issues.py --report reports/owasp-security-report-<stamp
 ```
 
 Nothing is written. The output lists, per finding, whether it would be created or
-updated, the priority chosen for its severity, and the labels. Check that the
+updated, the severity, and the labels. Check that the
 count matches the report's findings total and that no rejected candidate has crept
 in, then show the user what is about to be filed and get their agreement. Filing
 into someone's tracker is visible to their whole team, so it is worth one
@@ -107,9 +107,9 @@ For each finding not already in Jira it creates an issue with:
   (`index.ts`, `main.py`, `+page.svelte`), or the file itself at the repository
   root (`Dockerfile`). It is deterministic, so a finding keeps the same summary on
   every run. The OWASP category and severity are in the labels instead.
-- **Priority** derived from the finding's severity, mapped onto a priority the
-  project actually offers (critical→Highest, high→High, medium→Medium, low→Low,
-  info→Lowest, with fallbacks for schemes that use Blocker/Major/Minor).
+- **Severity**, carried by a `severity-*` label and stated in the description.
+  The Jira Priority field is deliberately never read or set, so the skill works
+  the same whether or not the project's screen has one.
 - **Description** with `Current issue` (why it matters, plus the reviewer's
   notes), `Where` (repository, commit, file and line), `Evidence`,
   `Expected fix`, `Classification` (OWASP category, CWEs, severity, confidence,
@@ -122,9 +122,10 @@ For each finding not already in Jira it creates an issue with:
 - **A comment** recording that the agent logged it, with the run date and the
   report it came from.
 
-For findings already in Jira it updates only what it owns (priority and labels,
-when they changed), strikes through its previous status comment, and adds a fresh
-one. It never edits the summary, the description or anyone else's comments, and
+For findings already in Jira it updates only what it owns (labels, when they
+changed; if the severity changed, the old `severity-*` label is replaced rather
+than left beside the new one), strikes through its previous status comment, and
+adds a fresh one. It never edits the summary, the description or anyone else's comments, and
 it never changes an issue's status - if a team closed something, that is their
 decision to revisit, and the new comment tells them the finding is still present.
 
@@ -141,8 +142,8 @@ python scripts/verify_jira_issues.py --report reports/owasp-security-report-<sta
 
 The sync reports its own success, which is the weakest possible evidence. This
 reads the report again, asks Jira what it actually holds, and compares: every
-finding has an issue, each sits under the configured epic, priorities match
-severities, and each has a current agent comment. It exits non-zero if anything
+finding has an issue, each sits under the configured epic, the severity label
+matches the report, and each has a current agent comment. It exits non-zero if anything
 is missing.
 
 **If findings are missing**, re-run step 3 with the same report and filters. The
@@ -209,6 +210,7 @@ python -m unittest discover -s tests -v
 
 This asserts that a second run creates nothing, that the previous comment ends up
 struck through while exactly one reads as current, that a human's comment is never
-struck, that a severity change updates the priority and is noted, that `--dry-run`
+struck, that a severity change swaps the severity label and is noted, that priority
+is never set, that `--dry-run`
 writes nothing, and that the token never appears in an error message. Run it after
 changing any of these scripts.

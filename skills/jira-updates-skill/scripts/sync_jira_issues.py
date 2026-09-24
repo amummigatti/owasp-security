@@ -14,7 +14,7 @@ is the state.
 
 Before writing anything it checks what the project demands: that the issue type
 exists, that labels can be set (without them there is no idempotency), which
-priorities the scheme offers, and whether any required field is one this skill
+and whether any required field is one this skill
 cannot fill. It would rather stop with a precise explanation than file half a
 report.
 
@@ -40,7 +40,7 @@ import parse_report  # noqa: E402
 
 SEVERITY_ORDER = parse_report.SEVERITY_ORDER
 MARKER = "owasp-sync"
-FIELDS_WE_OWN = ("priority", "labels")
+FIELDS_WE_OWN = ("labels",)
 
 
 def utc_today() -> str:
@@ -63,7 +63,7 @@ def build_labels(issue: dict, config: dict) -> list:
         prefix,
         "security",
         label(prefix + "-" + issue["owasp_id"]),
-        label("severity-" + issue["severity"]),
+        severity_label(issue),
         label("repo-" + issue["repo"]),
         fingerprint_label(issue, config),
     ]
@@ -76,6 +76,13 @@ def build_labels(issue: dict, config: dict) -> list:
         if item and item not in seen:
             seen.append(item)
     return seen
+
+
+SEVERITY_LABELS = {"severity-" + name for name in jc.SEVERITIES}
+
+
+def severity_label(issue: dict) -> str:
+    return label("severity-" + issue["severity"])
 
 
 def fingerprint_label(issue: dict, config: dict) -> str:
@@ -254,7 +261,7 @@ def find_existing(client: jc.JiraClient, config: dict, issues: list) -> dict:
         chunk = labels[start:start + chunk_size]
         quoted = ", ".join('"' + item + '"' for item in chunk)
         jql = "project = " + jql_project(config["project"]) + " AND labels in (" + quoted + ") ORDER BY created ASC"
-        for result in client.search(jql, fields=("summary", "labels", "priority", "status", "parent")):
+        for result in client.search(jql, fields=("summary", "labels", "status", "parent")):
             for name in result.get("fields", {}).get("labels", []):
                 if name in chunk and name not in found:
                     found[name] = result
@@ -277,7 +284,6 @@ def preflight(client: jc.JiraClient, config: dict) -> dict:
             "it filed by a fingerprint label, so without it a re-run would file duplicates. Add Labels to "
             "the screen, or set JIRA_ISSUE_TYPE to a type that has it."
         )
-    priorities = [value.get("name") for value in fields.get("priority", {}).get("allowedValues", [])]
 
     epic_strategy, epic_field = None, None
     if config.get("epic"):
@@ -296,6 +302,8 @@ def preflight(client: jc.JiraClient, config: dict) -> dict:
                     "at the top level of the project."
                 )
 
+    # Priority is deliberately not managed: severity is carried by a label and the
+    # description, so the Priority field is ignored whether or not the screen has it.
     known = {"summary", "description", "project", "issuetype", "priority", "labels", "parent", "reporter"}
     unfillable = []
     autofilled = {}
@@ -312,7 +320,6 @@ def preflight(client: jc.JiraClient, config: dict) -> dict:
     return {
         "meta": meta,
         "problems": problems,
-        "priorities": priorities,
         "epic_strategy": epic_strategy,
         "epic_field": epic_field,
         "autofilled_required": autofilled,
@@ -329,14 +336,12 @@ def sync(client: jc.JiraClient, config: dict, parsed: dict, checks: dict, agent:
     for issue in issues:
         key_label = fingerprint_label(issue, config)
         match = existing.get(key_label)
-        priority = jc.resolve_priority(issue["severity"], checks["priorities"], config.get("priority_override", {}))
         labels = build_labels(issue, config)
         record = {
             "finding_id": issue["finding_id"],
             "fingerprint": issue["fingerprint"],
             "title": issue["title"],
             "severity": issue["severity"],
-            "priority": priority or None,
             "labels": labels,
         }
         try:
@@ -349,8 +354,6 @@ def sync(client: jc.JiraClient, config: dict, parsed: dict, checks: dict, agent:
                     "description": build_description(issue, report, agent, config),
                     "labels": labels,
                 }
-                if priority:
-                    fields["priority"] = {"name": priority}
                 if config.get("epic") and checks["epic_strategy"] == "parent":
                     fields["parent"] = {"key": config["epic"]}
                 elif config.get("epic") and checks["epic_strategy"] == "epic_link":
@@ -372,16 +375,24 @@ def sync(client: jc.JiraClient, config: dict, parsed: dict, checks: dict, agent:
 
                 changes = []
                 update_fields = {}
-                current_priority = (match.get("fields", {}).get("priority") or {}).get("name")
-                if priority and current_priority and current_priority != priority:
-                    update_fields["priority"] = {"name": priority}
-                    changes.append("priority " + current_priority + " -> " + priority)
                 current_labels = match.get("fields", {}).get("labels", []) or []
-                merged = current_labels + [item for item in labels if item not in current_labels]
-                if len(merged) != len(current_labels):
+                # Severity lives only in a label, so when it changes the old severity
+                # label must be swapped out, not left beside the new one - an issue
+                # tagged both medium and high would answer "how bad is this" with both.
+                current_severity = sorted(item for item in current_labels if item in SEVERITY_LABELS)
+                wanted_severity = severity_label(issue)
+                stale = [item for item in current_severity if item != wanted_severity]
+                kept = [item for item in current_labels if item not in stale]
+                added = [item for item in labels if item not in kept]
+                merged = kept + added
+                if stale:
+                    changes.append("severity " + ", ".join(item[len("severity-"):] for item in stale)
+                                   + " -> " + issue["severity"])
+                others = [item for item in added if item != wanted_severity]
+                if others:
+                    changes.append("labels added: " + ", ".join(others))
+                if merged != current_labels:
                     update_fields["labels"] = merged
-                    changes.append("labels added: "
-                                   + ", ".join(item for item in labels if item not in current_labels))
                 if update_fields:
                     client.update_issue(key, update_fields)
                 record["changes"] = changes

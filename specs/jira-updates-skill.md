@@ -25,14 +25,13 @@ tracker in step with the report on later runs without creating duplicates.
 1. Read the report and take only what it reports as findings. Candidates the
    report lists as rejected during review are never filed.
 2. Check the project before writing: the issue type exists, the Labels field is
-   available, which priorities the scheme offers, and whether any required field
-   cannot be filled. Stop with an explanation rather than filing part of a report.
+   available, and whether any required field cannot be filled. Stop with an explanation rather than filing part of a report.
 3. Create one issue per finding with every mandatory field populated: a tagged
    summary of the form `[repo name] [component] - Summary sentence` (component
-   derived from the finding's file path), a priority derived from the finding's
-   severity, a description stating
-   the current issue and the expected fix, labels for category, severity, CWE and
-   repository, and the epic as parent when configured.
+   derived from the finding's file path), a description stating the current issue
+   and the expected fix, labels for category, severity, CWE and repository, and the
+   epic as parent when configured. Severity is carried by a label and the
+   description; the Jira Priority field is deliberately never read or set.
 4. Add a comment recording that the agent logged the issue, with the run date and
    the source report.
 5. On a later run, do not duplicate. Find the existing issue by its fingerprint
