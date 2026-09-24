@@ -132,8 +132,15 @@ def mask_secret(text: str) -> str:
 
 
 def iter_files(root: Path, max_bytes: int) -> tuple:
-    """Yield scannable files plus counters for what was skipped and why."""
+    """Return scannable files, counters for what was skipped, and skipped-but-present paths.
+
+    Generated files (lockfiles, minified bundles) are not worth reading for
+    patterns, but their existence still matters: the "manifest without a
+    lockfile" rule can only work if it can see the lockfile. Their paths are
+    returned separately so presence and pair rules can use them.
+    """
     files = []
+    generated_paths = []
     skipped = {"large": 0, "binary": 0, "generated": 0, "unreadable": 0}
     for path in sorted(root.rglob("*")):
         if any(part in SKIP_DIRS for part in path.parts):
@@ -142,6 +149,7 @@ def iter_files(root: Path, max_bytes: int) -> tuple:
             continue
         if any(fnmatch.fnmatch(path.name, pattern) for pattern in SKIP_FILE_PATTERNS):
             skipped["generated"] += 1
+            generated_paths.append(path.relative_to(root).as_posix())
             continue
         if path.suffix.lower() in BINARY_EXTENSIONS:
             skipped["binary"] += 1
@@ -154,7 +162,7 @@ def iter_files(root: Path, max_bytes: int) -> tuple:
             skipped["unreadable"] += 1
             continue
         files.append(path)
-    return files, skipped
+    return files, skipped, generated_paths
 
 
 def read_text(path: Path) -> str:
@@ -180,11 +188,11 @@ def snippet_at(content: str, match: re.Match, sensitive: bool) -> str:
 def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
               classify, args) -> dict:
     root = Path(repo["path"])
-    files, skipped = iter_files(root, args.max_file_bytes)
+    files, skipped, generated_paths = iter_files(root, args.max_file_bytes)
     findings = []
     counter = 0
     per_rule_totals: dict = {}
-    all_relpaths = []
+    all_relpaths = list(generated_paths)
 
     for path in files:
         relpath = path.relative_to(root).as_posix()
