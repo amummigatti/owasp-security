@@ -1,0 +1,16 @@
+# Cloned scan targets and scratch scan artifacts
+.owasp-workspace/
+*.findings.json
+*.taxonomy.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
