@@ -193,6 +193,11 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
     findings = []
     counter = 0
     per_rule_totals: dict = {}
+    # Findings are capped per rule so one noisy pattern cannot bury everything else.
+    # A cap that drops results without saying so turns "40 found" into "40 exist",
+    # so every hit past the cap is still counted here and reported.
+    suppressed: dict = {}
+    capped_occurrences = 0
     all_relpaths = list(generated_paths)
 
     for path in files:
@@ -210,6 +215,11 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
             if path_excluded(rule.get("exclude_paths", []), relpath):
                 continue
             if per_rule_totals.get(rule["id"], 0) >= args.max_per_rule_per_repo:
+                # Over the cap: a first-match search is enough to know whether this
+                # file would have produced a finding, and it is far cheaper than
+                # collecting every occurrence.
+                if rule["regex"].search(content):
+                    suppressed[rule["id"]] = suppressed.get(rule["id"], 0) + 1
                 continue
 
             lines = []
@@ -219,6 +229,7 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
                 if len(snippets) < args.max_per_rule_per_file:
                     snippets.append(snippet_at(content, match, rule.get("sensitive", False)))
                 if len(lines) >= 500:  # a pathological file should not stall the scan
+                    capped_occurrences += 1
                     break
             if not lines:
                 continue
@@ -254,6 +265,7 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
             if path_excluded(rule.get("exclude_paths", []), relpath):
                 continue
             if per_rule_totals.get(rule["id"], 0) >= args.max_per_rule_per_repo:
+                suppressed[rule["id"]] = suppressed.get(rule["id"], 0) + 1
                 continue
             per_rule_totals[rule["id"]] = per_rule_totals.get(rule["id"], 0) + 1
             counter += 1
@@ -314,6 +326,27 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
                                  if f["severity"] in SEVERITY_ORDER else 9,
                                  f["owasp_id"], f["file"], f["line"]))
 
+    titles = {rule["id"]: rule["title"] for rule in list(rules) + list(presence_rules)}
+    truncated = [
+        {"rule_id": rule_id, "title": titles.get(rule_id, rule_id), "kept": args.max_per_rule_per_repo,
+         "suppressed_files": count}
+        for rule_id, count in sorted(suppressed.items())
+    ]
+    completeness_notes = []
+    for item in truncated:
+        completeness_notes.append(
+            "rule " + item["rule_id"] + " (" + item["title"] + "): " + str(item["suppressed_files"])
+            + " further file(s) matched but were not recorded, because only the first "
+            + str(item["kept"]) + " are kept per repository (raise --max-per-rule-per-repo to see them)")
+    if skipped.get("large"):
+        completeness_notes.append(str(skipped["large"]) + " file(s) larger than " + str(args.max_file_bytes)
+                                  + " bytes were not scanned")
+    if skipped.get("unreadable"):
+        completeness_notes.append(str(skipped["unreadable"]) + " file(s) could not be read and were not scanned")
+    if capped_occurrences:
+        completeness_notes.append(str(capped_occurrences) + " file(s) had more than 500 matches for one rule; "
+                                  "the occurrence count for those is a lower bound")
+
     by_severity: dict = {}
     by_category: dict = {}
     for finding in findings:
@@ -331,8 +364,12 @@ def scan_repo(repo: dict, rules: list, presence_rules: list, pair_rules: list,
             "files_scanned": len(files),
             "skipped": skipped,
             "rules_applied": len(rules) + len(presence_rules) + len(pair_rules),
+            "complete": not completeness_notes,
+            "truncated": truncated,
+            "completeness_notes": completeness_notes,
         },
-        "stats": {"total": len(findings), "by_severity": by_severity, "by_category": by_category},
+        "stats": {"total": len(findings), "by_severity": by_severity, "by_category": by_category,
+                  "truncated_rules": len(truncated)},
         "findings": findings,
     }
 
@@ -400,9 +437,12 @@ def main() -> int:
                 "candidates": repo["stats"]["total"],
                 "by_severity": repo["stats"]["by_severity"],
                 "by_category": repo["stats"]["by_category"],
+                "complete": repo["scan"]["complete"],
+                "not_covered": repo["scan"]["completeness_notes"],
             }
             for repo in results
         ],
+        "complete": all(repo["scan"]["complete"] for repo in results),
         "next_step": "review every candidate, set verdict to confirmed/false_positive, "
                      "add findings patterns cannot see, then run render_report.py",
     }, indent=2))

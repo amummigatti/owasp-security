@@ -23,6 +23,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from redact import redact_list, redact_text  # noqa: E402
+
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 SEVERITY_COLUMNS = ["critical", "high", "medium", "low"]
 
@@ -40,6 +44,62 @@ VERDICT_LABEL = {
     "not_applicable": "Not applicable",
     "wont_fix": "Accepted risk",
 }
+
+
+TEXT_FIELDS = ("title", "explain", "analysis", "remediation")
+
+
+def redact_findings(data: dict) -> int:
+    """Mask secret-looking values in every piece of text that ends up in the report.
+
+    The scanner masks what its own rules collect, but the review step adds free text
+    and evidence typed by hand, and a report is copied onward (into a tracker, into
+    chat). Redaction here means what leaves this tool is clean whoever wrote it.
+    """
+    total = 0
+    for repo in data.get("repos", []):
+        for finding in repo.get("findings", []):
+            # A rejected candidate only surfaces as a title and a reason in the appendix.
+            # Its other text is still cleaned (the findings file may be shared), but only
+            # what actually appears in the report is counted in the report's own note.
+            shown = ("title", "analysis") if finding.get("verdict", "unreviewed") in REJECTED else TEXT_FIELDS
+            for field in TEXT_FIELDS:
+                if isinstance(finding.get(field), str):
+                    finding[field], n = redact_text(finding[field])
+                    total += n if field in shown else 0
+            if isinstance(finding.get("snippets"), list):
+                finding["snippets"], n = redact_list(finding["snippets"])
+                total += n if "snippets" in shown or shown == TEXT_FIELDS else 0
+    return total
+
+
+def fingerprint_key(repo_name: str, finding: dict) -> tuple:
+    """Same identity the Jira skill uses to recognise a finding across runs."""
+    return (str(repo_name).strip().lower(), str(finding.get("title", "")).strip().lower(),
+            str(finding.get("file", "")).strip().lower())
+
+
+def find_collisions(data: dict) -> list:
+    """Findings that would be indistinguishable in a tracker: same repo, title and file.
+
+    Two such findings share one identity, so a tracker would either merge them or
+    file duplicates and later lose track of one. The fix is cheap at review time
+    (give them distinct titles) and expensive afterwards, so refuse to render.
+    """
+    collisions = []
+    for repo in data.get("repos", []):
+        seen: dict = {}
+        for finding in repo.get("findings", []):
+            if finding.get("verdict", "unreviewed") in REJECTED:
+                continue
+            seen.setdefault(fingerprint_key(repo.get("name", ""), finding), []).append(finding)
+        for key, group in seen.items():
+            if len(group) > 1:
+                collisions.append({
+                    "repo": repo.get("name", ""), "title": group[0].get("title", ""), "file": group[0].get("file", ""),
+                    "finding_ids": [item.get("id", "?") for item in group],
+                })
+    return collisions
 
 
 def severity_rank(value: str) -> int:
@@ -116,9 +176,18 @@ def render_repo(repo: dict, taxonomy_names: dict, lines: list) -> dict:
                  + str(git.get("branch", "")) + "` (" + str(git.get("committed_at", "")) + ") |")
     lines.append("| Languages | " + (", ".join(list(inventory.get("languages", {}))[:8]) or "n/a") + " |")
     lines.append("| Files scanned | " + str(scan.get("files_scanned", "n/a")) + " |")
+    notes = scan.get("completeness_notes") or []
+    lines.append("| Scan coverage | " + ("Complete" if not notes else "**Incomplete** - " + str(len(notes))
+                                          + " gap(s), listed below") + " |")
     lines.append("| Findings reported | " + str(len(active))
                  + " (plus " + str(len(rejected)) + " rejected during review) |")
     lines.append("")
+    if notes:
+        lines.append("> **This repository was not fully scanned.** The findings below are a subset, so "
+                     "an absence of findings here is not evidence of absence.")
+        lines.append(">")
+        lines += ["> - " + note for note in notes]
+        lines.append("")
 
     if not active:
         lines += ["No findings were reported for this repository. "
@@ -174,6 +243,19 @@ def main() -> int:
     args = parser.parse_args()
 
     data = json.loads(Path(args.findings).read_text(encoding="utf-8"))
+
+    collisions = find_collisions(data)
+    if collisions:
+        print(json.dumps({
+            "ok": False,
+            "error": "findings would be indistinguishable in a tracker: same repository, title and file",
+            "collisions": collisions,
+            "hint": "give each finding a title that says what is different about it (which system, which "
+                    "setting), then render again. Nothing was written.",
+        }, indent=2))
+        return 2
+
+    redactions = redact_findings(data)
     taxonomy = json.loads(Path(args.taxonomy).read_text(encoding="utf-8")) if args.taxonomy else {}
     categories = taxonomy.get("categories", [])
     taxonomy_names = {category["id"]: category["name"] for category in categories}
@@ -251,6 +333,12 @@ def main() -> int:
                          + " | " + str(total) + " |")
         lines.append("")
 
+    incomplete = [repo.get("name", "?") for repo in repos if (repo.get("scan") or {}).get("completeness_notes")]
+    if incomplete:
+        lines += ["> **Incomplete scan.** " + str(len(incomplete)) + " of " + str(len(repos))
+                  + " repositories were not fully scanned (" + ", ".join(incomplete) + "). The counts above "
+                  "are a lower bound; each repository section lists what was not covered.", ""]
+
     unreviewed = [f for f in all_active if f.get("verdict", "unreviewed") == "unreviewed"]
     if unreviewed:
         lines += ["> **" + str(len(unreviewed)) + " finding(s) in this report are unreviewed pattern "
@@ -285,8 +373,11 @@ def main() -> int:
         "and rotate them - masking the report does not undo the exposure in version control.",
         "- An empty result for a repository means these checks found nothing, not that the "
         "repository is secure.",
-        "",
     ]
+    if redactions:
+        lines.append("- " + str(redactions) + " value(s) matching secret patterns were redacted from the "
+                     "evidence and notes in this report.")
+    lines.append("")
 
     referenced = sorted({f.get("owasp_id", "") for f in all_active if f.get("owasp_id", "UNMAPPED") != "UNMAPPED"})
     if referenced:
@@ -306,6 +397,9 @@ def main() -> int:
         "findings_reported": len(all_active),
         "unreviewed_included": len(unreviewed),
         "by_severity": {name: totals[name] for name in SEVERITY_COLUMNS},
+        "redactions": redactions,
+        "scan_complete": not incomplete,
+        "incomplete_repositories": incomplete,
     }, indent=2))
     return 0
 
