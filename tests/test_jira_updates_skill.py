@@ -15,11 +15,16 @@ Run:  python -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import re
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "jira-updates-skill" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -146,6 +151,15 @@ def adf_violations(node, found=None):
                     found.append("marks inside a codeBlock")
         adf_violations(node.get("content", []), found)
     return found
+
+
+REPORT_WITH_TWIN = REPORT.replace(
+    "### A02:2025 - Security Misconfiguration (1)",
+    "### A05:2025 - Injection (1)\n\n#### demo-app-009 - SQL statement assembled from a string\n\n"
+    "- **Severity:** HIGH  |  **Confidence:** high  |  **Status:** Confirmed by review\n"
+    "- **Location:** `src/db.py:120`\n- **CWE:** CWE-89\n- **Detected by:** manual-review\n\n"
+    "**Why it matters**\n\nA second, different injection in the same file.\n\n**Recommended fix**\n\nBind it.\n\n"
+    "### A02:2025 - Security Misconfiguration (1)")
 
 
 class FakeJira:
@@ -509,6 +523,168 @@ class SummaryFormatTests(unittest.TestCase):
         self.assertGreater(len(parsed["issues"]), 0)
         for issue in parsed["issues"]:
             self.assertRegex(sync.build_summary(issue), r"^\[[^\[\]]+\] \[[^\[\]]+\] - \S")
+
+
+class CommandLineGateTests(unittest.TestCase):
+    """The behaviours that keep a careless run from doing damage in someone's tracker.
+
+    These drive the real command-line entry point (not just the library functions), because
+    the gates live in the defaults of that entry point.
+    """
+
+    def setUp(self):
+        self.fake = FakeJira()
+        self.tmp = Path(tempfile.mkdtemp(prefix="jira-cli-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def cli(self, report_text, *flags):
+        report = self.tmp / "report.md"
+        report.write_text(report_text, encoding="utf-8")
+        argv = ["sync_jira_issues.py", "--report", str(report), *flags]
+        stdout = io.StringIO()
+        fake = self.fake
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(jc, "load_config", lambda *a, **k: dict(CONFIG)), \
+                mock.patch.object(jc.JiraClient, "_request", lambda self, *a, **k: fake.handle(*a, **k)), \
+                contextlib.redirect_stdout(stdout):
+            code = sync.main()
+        return code, json.loads(stdout.getvalue())
+
+    def unreviewed(self, text):
+        return text.replace("Needs verification (requires a running instance)", "Pattern candidate, not yet reviewed")
+
+    # ---- fix 1: nothing is written unless asked -------------------------------------------
+    def test_no_flags_is_a_dry_run_and_writes_nothing(self):
+        code, out = self.cli(REPORT)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out["dry_run"])
+        self.assertEqual(len(self.fake.issues), 0)
+        self.assertIn("--apply", out["next_step"])
+        self.assertNotIn("POST", [m for m, p in self.fake.requests if p == API + "/issue"])
+
+    def test_apply_is_what_writes(self):
+        code, out = self.cli(REPORT, "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(out["dry_run"])
+        self.assertEqual(len(self.fake.issues), 2)
+
+    def test_explicit_dry_run_still_works(self):
+        code, out = self.cli(REPORT, "--dry-run")
+        self.assertTrue(out["dry_run"])
+        self.assertEqual(len(self.fake.issues), 0)
+
+    def test_apply_and_dry_run_together_are_rejected(self):
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.cli(REPORT, "--apply", "--dry-run")
+        self.assertEqual(len(self.fake.issues), 0)
+
+    # ---- fix 1: unreviewed candidates are opt-in ------------------------------------------
+    def test_unreviewed_findings_are_not_filed_by_default(self):
+        code, out = self.cli(self.unreviewed(REPORT), "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.fake.issues), 1, "only the reviewed finding should be filed")
+        self.assertEqual(out["not_selected"]["unreviewed"], 1)
+        self.assertIn("not yet reviewed", out["warning"])
+
+    def test_unreviewed_findings_can_be_included_explicitly(self):
+        code, out = self.cli(self.unreviewed(REPORT), "--apply", "--include-unreviewed")
+        self.assertEqual(len(self.fake.issues), 2)
+        self.assertEqual(out["not_selected"]["unreviewed"], 0)
+
+    def test_needs_verification_is_still_filed_by_default(self):
+        self.cli(REPORT, "--apply")
+        titles = [payload["summary"] for payload in self.fake.created_payloads]
+        self.assertTrue(any("Debug mode enabled" in title for title in titles))
+
+    # ---- fix 3: fingerprint collisions ----------------------------------------------------
+    def test_findings_sharing_a_fingerprint_block_the_run_before_any_write(self):
+        code, out = self.cli(REPORT_WITH_TWIN, "--apply")
+        self.assertEqual(code, 2)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["collisions"][0]["finding_ids"], ["demo-app-001", "demo-app-009"])
+        self.assertEqual(len(self.fake.issues), 0)
+        self.assertEqual([r for r in self.fake.requests if r[0] == "POST"], [])
+
+    # ---- fix 4: secrets never reach Jira --------------------------------------------------
+    def test_a_secret_in_the_report_never_reaches_jira(self):
+        leaky = REPORT.replace(
+            'cur.execute("SELECT * FROM t WHERE id = " + request.args["id"])',
+            'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'
+        ).replace("Use bind parameters.", "Rotate AKIAIOSFODNN7EXAMPLE and use bind parameters.")
+        code, out = self.cli(leaky, "--apply")
+        self.assertEqual(code, 0, out)
+        everything = json.dumps([self.fake.created_payloads,
+                                 [c for issue in self.fake.issues.values() for c in issue["comments"]]])
+        self.assertNotIn("wJalrXUtnFEMI", everything)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", everything)
+        self.assertIn("<redacted:", everything)
+        self.assertEqual(out["redactions"], 2)
+
+    def test_redaction_does_not_change_the_fingerprint_label(self):
+        clean_code, _ = self.cli(REPORT, "--apply")
+        first = sorted(label for p in self.fake.created_payloads for label in p["labels"] if "-fp-" in label)
+        self.fake = FakeJira()
+        self.cli(REPORT.replace('cur.execute("SELECT * FROM t WHERE id = " + request.args["id"])',
+                                'password = "hunter2hunter2"'), "--apply")
+        second = sorted(label for p in self.fake.created_payloads for label in p["labels"] if "-fp-" in label)
+        self.assertEqual(first, second)
+
+    # ---- fix 3: duplicates that already exist in Jira are surfaced ---------------------------
+    def test_duplicate_issues_already_in_jira_are_reported(self):
+        self.cli(REPORT, "--apply")
+        original = self.fake.issues["AI-2"]
+        self.fake.counter += 1
+        self.fake.issues["AI-%d" % self.fake.counter] = {"fields": dict(original["fields"]), "comments": []}
+        code, out = self.cli(REPORT, "--apply")
+        self.assertEqual(len(out["duplicates_in_jira"]), 1)
+        keys = list(out["duplicates_in_jira"].values())[0]
+        self.assertEqual(keys[0], "AI-2")
+        self.assertEqual(len(keys), 2)
+
+    def test_verification_flags_duplicate_issues(self):
+        self.cli(REPORT, "--apply")
+        original = self.fake.issues["AI-2"]
+        self.fake.counter += 1
+        self.fake.issues["AI-%d" % self.fake.counter] = {"fields": dict(original["fields"]), "comments": []}
+        parsed = parse_report.parse(REPORT, "reports/demo.md")
+        client = jc.JiraClient(CONFIG)
+        client._request = self.fake.handle  # noqa: SLF001
+        result = verify_jira_issues.verify(client, CONFIG, parsed["issues"], parsed["report"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("more than one Jira issue carries this fingerprint" in problem
+                            for item in result["inconsistencies"] for problem in item["problems"]))
+
+
+class SelectIssuesTests(unittest.TestCase):
+    def setUp(self):
+        self.issues = [
+            {"finding_id": "a", "severity": "high", "verdict": "confirmed"},
+            {"finding_id": "b", "severity": "low", "verdict": "needs_verification"},
+            {"finding_id": "c", "severity": "high", "verdict": "unreviewed"},
+            {"finding_id": "d", "severity": "high", "verdict": "unknown"},
+        ]
+
+    def ids(self, selected):
+        return [i["finding_id"] for i in selected]
+
+    def test_default_is_reviewed_findings_only(self):
+        selected, skipped = parse_report.select_issues(self.issues)
+        self.assertEqual(self.ids(selected), ["a", "b"])
+        self.assertEqual(skipped, {"unreviewed": 1, "other": 1})
+
+    def test_unreviewed_is_opt_in(self):
+        selected, skipped = parse_report.select_issues(self.issues, include_unreviewed=True)
+        self.assertEqual(self.ids(selected), ["a", "b", "c"])
+        self.assertEqual(skipped["unreviewed"], 0)
+
+    def test_explicit_verdict_list_overrides_the_default(self):
+        selected, _ = parse_report.select_issues(self.issues, include_verdicts=["unreviewed"])
+        self.assertEqual(self.ids(selected), ["c"])
+
+    def test_severity_floor_combines_with_the_verdict_rule(self):
+        selected, _ = parse_report.select_issues(self.issues, min_severity="high")
+        self.assertEqual(self.ids(selected), ["a"])
 
 
 class VerificationTests(unittest.TestCase):

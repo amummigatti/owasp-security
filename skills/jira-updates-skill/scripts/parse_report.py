@@ -76,6 +76,44 @@ def fingerprint(repo: str, title: str, file: str) -> str:
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
 
 
+# Which reviewed findings are worth a ticket. A finding the report still calls
+# "not yet reviewed" is a raw pattern hit that nobody has read against the code, and
+# most of those are false positives (about 85% in the first two real scans). Filing
+# them turns each one into a ticket somebody has to close, so they are opt-in.
+DEFAULT_VERDICTS = ("confirmed", "needs_verification")
+
+
+def select_issues(issues: list, min_severity: str = "", include_verdicts=None,
+                  include_unreviewed: bool = False) -> tuple:
+    """Apply the filters every step shares, so sync and verify always agree.
+
+    Returns (selected, skipped) where skipped counts what the verdict rule kept out,
+    so the caller can say "3 unreviewed findings were not filed" instead of silently
+    filing fewer than the report lists.
+    """
+    selected = list(issues)
+    if min_severity:
+        ceiling = SEVERITY_ORDER.index(min_severity)
+        selected = [i for i in selected
+                    if (SEVERITY_ORDER.index(i["severity"]) if i["severity"] in SEVERITY_ORDER else 9) <= ceiling]
+
+    skipped = {"unreviewed": 0, "other": 0}
+    if include_verdicts:
+        wanted = {value.lower() for value in include_verdicts}
+    else:
+        wanted = set(DEFAULT_VERDICTS) | ({"unreviewed"} if include_unreviewed else set())
+
+    kept = []
+    for issue in selected:
+        if issue["verdict"] in wanted:
+            kept.append(issue)
+        elif issue["verdict"] == "unreviewed":
+            skipped["unreviewed"] += 1
+        else:
+            skipped["other"] += 1
+    return kept, skipped
+
+
 def normalize_verdict(status: str) -> str:
     lowered = (status or "").lower()
     for needle, verdict in STATUS_VERDICTS:
@@ -280,8 +318,10 @@ def main() -> int:
     parser.add_argument("--min-severity", choices=SEVERITY_ORDER,
                         help="drop findings less severe than this")
     parser.add_argument("--include-verdict", action="append", default=[], metavar="VERDICT",
-                        help="only these verdicts (confirmed, needs_verification, unreviewed); "
-                             "repeatable, default: all that the report lists as findings")
+                        help="only these verdicts (confirmed, needs_verification, unreviewed); repeatable. "
+                             "Default: confirmed and needs_verification")
+    parser.add_argument("--include-unreviewed", action="store_true",
+                        help="also include findings the report marks as not yet reviewed")
     args = parser.parse_args()
 
     report_path = Path(args.report)
@@ -290,15 +330,8 @@ def main() -> int:
         return 1
 
     parsed = parse(report_path.read_text(encoding="utf-8"), str(report_path))
-    issues = parsed["issues"]
-
-    if args.min_severity:
-        ceiling = SEVERITY_ORDER.index(args.min_severity)
-        issues = [i for i in issues
-                  if (SEVERITY_ORDER.index(i["severity"]) if i["severity"] in SEVERITY_ORDER else 9) <= ceiling]
-    if args.include_verdict:
-        wanted = {value.lower() for value in args.include_verdict}
-        issues = [i for i in issues if i["verdict"] in wanted]
+    issues, skipped = select_issues(parsed["issues"], args.min_severity, args.include_verdict,
+                                    args.include_unreviewed)
 
     parsed["issues"] = issues
     duplicates = {}
@@ -325,6 +358,7 @@ def main() -> int:
         "by_severity": by_severity,
         "by_repo": by_repo,
         "fingerprint_collisions": collisions,
+        "not_selected": skipped,
         "issues_json": args.out or None,
     }, indent=2))
     return 0

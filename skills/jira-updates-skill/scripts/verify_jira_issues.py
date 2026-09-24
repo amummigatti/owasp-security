@@ -44,6 +44,8 @@ def main() -> int:
                         help="use the same filter the sync run used")
     parser.add_argument("--include-verdict", action="append", default=[],
                         help="use the same filter the sync run used")
+    parser.add_argument("--include-unreviewed", action="store_true",
+                        help="use the same filter the sync run used")
     parser.add_argument("--skip-comment-check", action="store_true",
                         help="do not fetch comments (one fewer API call per issue)")
     parser.add_argument("--out", default="", help="write the verification JSON here")
@@ -62,15 +64,8 @@ def main() -> int:
         return 2
 
     parsed = parse_report.parse(report_path.read_text(encoding="utf-8"), str(report_path))
-    issues = parsed["issues"]
-    if args.min_severity:
-        ceiling = parse_report.SEVERITY_ORDER.index(args.min_severity)
-        issues = [i for i in issues
-                  if (parse_report.SEVERITY_ORDER.index(i["severity"])
-                      if i["severity"] in parse_report.SEVERITY_ORDER else 9) <= ceiling]
-    if args.include_verdict:
-        wanted = {value.lower() for value in args.include_verdict}
-        issues = [i for i in issues if i["verdict"] in wanted]
+    issues, _ = parse_report.select_issues(parsed["issues"], args.min_severity, args.include_verdict,
+                                           args.include_unreviewed)
 
     client = jc.JiraClient(config)
     try:
@@ -92,7 +87,7 @@ def verify(client, config: dict, issues: list, report: dict, check_comments: boo
     """Compare the report's findings against what Jira actually holds."""
     meta = client.create_meta()
     fields = {field.get("fieldId"): field for field in meta["fields"]}
-    existing = sync.find_existing(client, config, issues) if issues else {}
+    existing, duplicates = sync.find_existing_detailed(client, config, issues) if issues else ({}, {})
 
     checks = []
     missing = []
@@ -114,6 +109,9 @@ def verify(client, config: dict, issues: list, report: dict, check_comments: boo
             continue
 
         problems = []
+        if key_label in duplicates:
+            problems.append("more than one Jira issue carries this fingerprint (" + ", ".join(duplicates[key_label])
+                            + "); only " + match["key"] + " is kept up to date, so the others will go stale")
         issue_fields = match.get("fields", {})
         record["present"] = True
         record["key"] = match["key"]

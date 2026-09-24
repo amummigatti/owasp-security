@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import jira_client as jc  # noqa: E402
 import parse_report  # noqa: E402
+from redact import redact_list, redact_text  # noqa: E402
 
 SEVERITY_ORDER = parse_report.SEVERITY_ORDER
 MARKER = "owasp-sync"
@@ -253,9 +254,50 @@ def jql_project(project: str) -> str:
     return project if project.isdigit() else '"' + project + '"'
 
 
+def redact_issue(issue: dict) -> int:
+    """Mask secret-looking values in the text that will be written to Jira.
+
+    A tracker's audience is wider than a repository's, and the report's evidence may
+    have been typed by hand during review. The report renderer redacts too; doing it
+    again here means a report from an older run, or one edited by hand, cannot carry a
+    credential into Jira. The fingerprint was computed from the untouched title
+    beforehand, so redaction never changes an issue's identity.
+    """
+    total = 0
+    for field in ("title", "why", "review_notes", "fix"):
+        if isinstance(issue.get(field), str):
+            issue[field], n = redact_text(issue[field])
+            total += n
+    if isinstance(issue.get("evidence"), list):
+        issue["evidence"], n = redact_list(issue["evidence"])
+        total += n
+    return total
+
+
+def find_collisions(issues: list) -> list:
+    """Findings that share a fingerprint: they would be treated as one issue."""
+    groups: dict = {}
+    for issue in issues:
+        groups.setdefault(issue["fingerprint"], []).append(issue)
+    return [{"fingerprint": key, "repo": group[0]["repo"], "title": group[0]["title"], "file": group[0]["file"],
+             "finding_ids": [item["finding_id"] for item in group]}
+            for key, group in groups.items() if len(group) > 1]
+
+
 def find_existing(client: jc.JiraClient, config: dict, issues: list) -> dict:
     """Map fingerprint label -> existing issue, in as few searches as possible."""
+    return find_existing_detailed(client, config, issues)[0]
+
+
+def find_existing_detailed(client: jc.JiraClient, config: dict, issues: list) -> tuple:
+    """Like find_existing, but also returns fingerprints that more than one issue carries.
+
+    Two Jira issues sharing a fingerprint means an earlier run (or a person) split one
+    finding in two. Only the first is ever updated, so the second silently goes stale;
+    callers surface it rather than let it hide.
+    """
     found = {}
+    duplicates: dict = {}
     labels = [fingerprint_label(issue, config) for issue in issues]
     chunk_size = 40
     for start in range(0, len(labels), chunk_size):
@@ -266,7 +308,9 @@ def find_existing(client: jc.JiraClient, config: dict, issues: list) -> dict:
             for name in result.get("fields", {}).get("labels", []):
                 if name in chunk and name not in found:
                     found[name] = result
-    return found
+                elif name in chunk and result["key"] != found[name]["key"]:
+                    duplicates.setdefault(name, [found[name]["key"]]).append(result["key"])
+    return found, duplicates
 
 
 def preflight(client: jc.JiraClient, config: dict) -> dict:
@@ -331,7 +375,7 @@ def preflight(client: jc.JiraClient, config: dict) -> dict:
 def sync(client: jc.JiraClient, config: dict, parsed: dict, checks: dict, agent: str) -> dict:
     report = parsed["report"]
     issues = parsed["issues"]
-    existing = find_existing(client, config, issues) if issues else {}
+    existing, duplicates = find_existing_detailed(client, config, issues) if issues else ({}, {})
     results = []
 
     for issue in issues:
@@ -417,7 +461,7 @@ def sync(client: jc.JiraClient, config: dict, parsed: dict, checks: dict, agent:
             record["status_code"] = error.status
         results.append(record)
 
-    return {"results": results}
+    return {"results": results, "duplicates_in_jira": duplicates}
 
 
 def main() -> int:
@@ -426,16 +470,26 @@ def main() -> int:
     )
     parser.add_argument("--report", required=True, help="the OWASP scan report Markdown file")
     parser.add_argument("--env", default="", help="path to the .env file holding the Jira settings")
+    parser.add_argument("--apply", action="store_true",
+                        help="actually write to Jira. Without it nothing is written: the run only shows what "
+                             "would be created or updated")
     parser.add_argument("--dry-run", action="store_true",
-                        help="show what would be filed or updated without writing to Jira")
+                        help="explicit form of the default; nothing is written to Jira (cannot be combined "
+                             "with --apply)")
     parser.add_argument("--min-severity", choices=SEVERITY_ORDER, help="skip findings below this severity")
     parser.add_argument("--include-verdict", action="append", default=[],
                         help="only file these verdicts (confirmed, needs_verification, unreviewed)")
+    parser.add_argument("--include-unreviewed", action="store_true",
+                        help="also file findings the report marks as not yet reviewed (off by default: they are "
+                             "raw pattern hits, mostly false positives)")
     parser.add_argument("--agent-name", default="", help="name recorded in comments (default: owasp-security-agent)")
     parser.add_argument("--out", default="", help="write the run result JSON here")
     parser.add_argument("--force", action="store_true",
                         help="proceed even when required fields cannot be filled (the create may fail)")
     args = parser.parse_args()
+    if args.apply and args.dry_run:
+        parser.error("--apply and --dry-run contradict each other; choose one")
+    dry_run = not args.apply
 
     config = jc.load_config(args.env)
     missing = jc.missing_config(config)
@@ -457,22 +511,29 @@ def main() -> int:
         return 2
 
     parsed = parse_report.parse(report_path.read_text(encoding="utf-8"), str(report_path))
-    if args.min_severity:
-        ceiling = SEVERITY_ORDER.index(args.min_severity)
-        parsed["issues"] = [i for i in parsed["issues"]
-                            if (SEVERITY_ORDER.index(i["severity"]) if i["severity"] in SEVERITY_ORDER else 9)
-                            <= ceiling]
-    if args.include_verdict:
-        wanted = {value.lower() for value in args.include_verdict}
-        parsed["issues"] = [i for i in parsed["issues"] if i["verdict"] in wanted]
+    parsed["issues"], not_selected = parse_report.select_issues(
+        parsed["issues"], args.min_severity, args.include_verdict, args.include_unreviewed)
 
     if not parsed["issues"]:
-        print(json.dumps({"ok": True, "filed": 0,
+        print(json.dumps({"ok": True, "filed": 0, "not_selected": not_selected,
                           "note": "the report contains no findings matching the filters; nothing to file"},
                          indent=2))
         return 0
 
-    client = jc.JiraClient(config, dry_run=args.dry_run)
+    collisions = find_collisions(parsed["issues"])
+    if collisions:
+        print(json.dumps({
+            "ok": False,
+            "error": "findings share a fingerprint, so a tracker could not tell them apart",
+            "collisions": collisions,
+            "hint": "give each a title that says what is different about it in the scan report and render "
+                    "again. Nothing was written to Jira.",
+        }, indent=2))
+        return 2
+
+    redactions = sum(redact_issue(issue) for issue in parsed["issues"])
+
+    client = jc.JiraClient(config, dry_run=dry_run)
     try:
         me = client.myself()
         checks = preflight(client, config)
@@ -501,13 +562,16 @@ def main() -> int:
 
     summary = {
         "ok": not failed,
-        "dry_run": args.dry_run,
+        "dry_run": dry_run,
         "authenticated_as": me.get("displayName") or "unknown",
         "project": config["project"],
         "epic": config["epic"] or None,
         "epic_strategy": checks["epic_strategy"],
         "report": parsed["report"]["file_name"],
         "issues_in_report": len(parsed["issues"]),
+        "not_selected": not_selected,
+        "redactions": redactions,
+        "duplicates_in_jira": outcome["duplicates_in_jira"],
         "actions": counts,
         "api_calls": client.calls,
         "autofilled_required_fields": {name: field_id for field_id, (name, _) in
@@ -515,6 +579,11 @@ def main() -> int:
         "failures": [{"finding_id": r["finding_id"], "error": r.get("error")} for r in failed],
         "results": results,
     }
+    if dry_run:
+        summary["next_step"] = "Nothing was written to Jira. Re-run with --apply to file these issues."
+    if not_selected.get("unreviewed"):
+        summary["warning"] = (str(not_selected["unreviewed"]) + " finding(s) the report marks as not yet "
+                              "reviewed were left out; review them, or pass --include-unreviewed to file them")
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
