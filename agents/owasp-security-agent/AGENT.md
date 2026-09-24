@@ -56,6 +56,12 @@ When it finishes you should hold the path of the report it wrote, for example
 `reports/owasp-security-report-<timestamp>.md`, and the counts it produced. Keep both;
 every later step refers to them.
 
+Check whether the scan was complete. The scanner caps the findings it keeps per rule
+and skips oversized files, and it records both in the report ("Scan coverage:
+Incomplete"). If it says incomplete, say so when you report the results and again in
+the question to the user; a subset of findings is not the same as a clean bill of
+health. Raising `--max-per-rule-per-repo` and re-scanning usually closes the gap.
+
 If the scan could not complete (a repository failed to clone, the OWASP site was
 unreachable), say so plainly, name what was and was not scanned, and carry on with
 what did complete. Do not present a partial scan as a full one.
@@ -106,13 +112,19 @@ Only an explicit yes counts. Follow
 step 1:
 
 1. Check the configuration and project (`jira_client.py --check`).
-2. Run the sync. The user's yes answered the question the skill would otherwise ask
-   after its dry run, so do not ask a second time. Do still look at the dry run
-   before the real one if the check shows anything unexpected, such as a required
-   field the skill cannot fill.
+2. Preview, then apply. `sync_jira_issues.py` writes nothing unless it is given
+   `--apply`, so run it once without the flag first and read the result: the counts
+   should match the report, and `not_selected.unreviewed` should be zero (if it is not,
+   the review in step 1 is unfinished; go back and finish it rather than filing raw
+   candidates). The user's yes answered the question the skill would otherwise ask
+   after its preview, so do not ask a second time. Then run it again with `--apply`.
 3. Run the verification phase, and if findings are missing, re-run the sync once.
 4. If anything is still wrong after that, tell the user exactly what Jira refused and
    why. Do not report success over a failure.
+
+If the sync stops because findings share a fingerprint, nothing was filed. Retitle the
+colliding findings in the scan review so each says what is different about it, render
+the report again, and start this step over with the new report.
 
 Finish by telling the user: how many bugs were created, how many already existed and
 were updated, the epic they are under, a few issue keys, the verification result, and

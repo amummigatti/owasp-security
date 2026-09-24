@@ -79,24 +79,36 @@ one check than from thirty failed calls.
 If it reports missing configuration, name the missing keys to the user and ask
 them to fill `.env`. Do not guess values, and do not ask for the token in chat.
 
-### Step 2 - Dry run
+### Step 2 - Preview (this is what running the script does by default)
 
 ```bash
-python scripts/sync_jira_issues.py --report reports/owasp-security-report-<stamp>.md --dry-run
+python scripts/sync_jira_issues.py --report reports/owasp-security-report-<stamp>.md
 ```
 
-Nothing is written. The output lists, per finding, whether it would be created or
-updated, the severity, and the labels. Check that the
-count matches the report's findings total and that no rejected candidate has crept
-in, then show the user what is about to be filed and get their agreement. Filing
-into someone's tracker is visible to their whole team, so it is worth one
-confirmation.
+**Nothing is written unless you pass `--apply`.** A bare run is a preview: it lists,
+per finding, whether it would be created or updated, the severity, and the labels,
+and ends with a reminder that nothing was filed. The default is deliberately the safe
+one, because filing into someone's tracker is visible to their whole team and cannot
+be taken back by re-running.
+
+Check that the count matches what the report lists and that no rejected candidate has
+crept in, then show the user what is about to be filed and get their agreement.
+
+Read two fields in the output before going on:
+
+- `not_selected.unreviewed` counts findings the report still marks as not yet
+  reviewed. They are **left out by default**: they are raw pattern hits, and about 85%
+  of them turned out to be false positives in the first real scans. If this is not
+  zero, go back and finish the review in the scan skill rather than filing them.
+  `--include-unreviewed` exists for the rare case where you really want them.
+- `redactions` counts secret-looking values masked in the text about to be sent (see
+  below).
 
 ### Step 3 - File the issues
 
 ```bash
 python scripts/sync_jira_issues.py --report reports/owasp-security-report-<stamp>.md \
-    --out .owasp-workspace/jira-sync.json
+    --apply --out .owasp-workspace/jira-sync.json
 ```
 
 For each finding not already in Jira it creates an issue with:
@@ -132,7 +144,23 @@ decision to revisit, and the new comment tells them the finding is still present
 
 Useful flags: `--min-severity high` to file only the serious findings,
 `--include-verdict confirmed` to leave the needs-verification ones out of the
-tracker, and `--agent-name` if the comments should be attributed differently.
+tracker, `--include-unreviewed` (see above), and `--agent-name` if the comments should
+be attributed differently. Pass the same selection flags to the verification step, or
+it will look for findings the sync was never asked to file.
+
+Two protections run on every sync, before anything is written:
+
+- **Secrets are redacted.** Every piece of text sent to Jira (summary, description,
+  evidence) passes through a redactor that masks credential-shaped values, such as
+  `password = "..."`, provider tokens, JWTs, URL credentials and private keys, with a
+  placeholder like `<redacted:aws-access-key-id>`. The report renderer does the same,
+  so a secret typed into a finding during review does not travel into the tracker. It
+  errs towards hiding a harmless value rather than leaking a live one. If a value was
+  hidden that a developer needs, they can read it in the repository.
+- **Colliding findings stop the run.** If two findings share a fingerprint (same
+  repository, title and file) a tracker cannot tell them apart, so the run exits with
+  status 2 and lists them, and nothing is filed. Retitle them in the scan review so
+  each says what is different (which system, which setting), then render again.
 
 ### Step 4 - Verify
 
@@ -161,6 +189,11 @@ updated, the epic they sit under, and the verification result. Link a couple of
 the created issues by key. If anything failed, lead with that.
 
 ## How idempotency works
+
+(If more than one Jira issue already carries the same fingerprint, for instance from
+an earlier run that filed a collision, only the first is kept up to date and the
+others go stale. The sync reports these as `duplicates_in_jira`, and verification
+fails on them, so they are surfaced rather than left to drift.)
 
 Each finding gets a fingerprint from its repository, its title and its file path,
 stored as a label on the issue. A re-run searches Jira for that label, and
@@ -212,6 +245,7 @@ python -m unittest discover -s tests -v
 This asserts that a second run creates nothing, that the previous comment ends up
 struck through while exactly one reads as current, that a human's comment is never
 struck, that a severity change swaps the severity label and is noted, that priority
-is never set, that `--dry-run`
-writes nothing, and that the token never appears in an error message. Run it after
-changing any of these scripts.
+is never set, that a run without `--apply` writes nothing, that unreviewed findings
+are not filed by default, that colliding findings block the run, that a secret in a
+report never reaches Jira, and that the token never appears in an error message.
+Run it after changing any of these scripts.

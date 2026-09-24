@@ -23,8 +23,9 @@ tracker in step with the report on later runs without creating duplicates.
 
 ## Behaviour
 
-1. Read the report and take only what it reports as findings. Candidates the
-   report lists as rejected during review are never filed.
+1. Read the report and take only what it reports as reviewed findings. Candidates the
+   report lists as rejected during review are never filed, and findings still marked
+   as not yet reviewed are left out unless explicitly requested.
 2. Check the project before writing: the issue type exists, the Labels field is
    available, and whether any required field cannot be filled. Stop with an explanation rather than filing part of a report.
 3. Create one issue per finding with every mandatory field populated: a tagged
@@ -53,6 +54,10 @@ tracker in step with the report on later runs without creating duplicates.
 - The API token is never printed, echoed, logged or committed, and is redacted
   from error output.
 - Nothing specific to a particular editor or vendor.
+- Nothing is written to Jira unless the caller passes `--apply`; the default run is a
+  preview.
+- Text sent to Jira is redacted for credential-shaped values before it leaves the tool.
+- Findings that share a fingerprint stop the run before anything is written.
 - The skill edits only what it created: never an issue's status, summary or
   description on re-run, and never another author's comments.
 

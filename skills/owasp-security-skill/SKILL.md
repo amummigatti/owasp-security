@@ -135,6 +135,14 @@ Applies `patterns/owasp-scan-patterns.json` (at the repository root) and classif
 CWE through the taxonomy you just fetched. Every candidate comes out as
 `verdict: "unreviewed"`.
 
+Read the printed `complete` and `not_covered` fields. To stop one noisy rule burying
+everything else, the scanner keeps at most 40 findings per rule per repository and
+skips files over the size limit; anything it left out is listed in `not_covered`, and
+the report then shows "Scan coverage: Incomplete". That means the findings are a
+subset, so do not describe the repository as clean. Re-run with
+`--max-per-rule-per-repo` raised (say to 200) until the scan is complete, or say
+plainly in your summary what was not covered.
+
 The pattern file is a starting set, not the rule book. When a repository uses a
 framework or a sink the patterns miss -- a template engine, an ORM, an RPC layer
 they do not know about -- add a rule and re-run. Give the rule CWE numbers rather
