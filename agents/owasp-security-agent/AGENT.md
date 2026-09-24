@@ -20,6 +20,9 @@ inputs:
 
 # OWASP security agent
 
+> This work agentifies OWASP security testing. It is designed to slot easily into the software
+> development lifecycle (SDLC), saving developers a lot of time.
+
 ## What this agent does
 
 It runs two skills in a fixed order and puts one decision between them:
